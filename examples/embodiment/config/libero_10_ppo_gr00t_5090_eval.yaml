@@ -48,7 +48,10 @@ algorithm:
   group_size: 1
   reward_coef: 1.0
   rollout_epoch: 8
-  eval_rollout_epoch: 1 # >0 required for only_eval
+  eval_rollout_epoch: 4 # iterations of env.eval.total_num_envs episodes each (16x4=64).
+                        # Total episodes = total_num_envs * eval_rollout_epoch; each epoch
+                        # advances the ordered LIBERO init-state ids, so episodes differ.
+                        # Memory stays at the 16-env footprint (iterations run sequentially).
   reward_type: chunk_level
   logprob_type: chunk_level
   entropy_type: chunk_level
@@ -95,7 +98,9 @@ env:
     use_fixed_reset_state_ids: True
     use_ordered_reset_state_ids: False
   eval:
-    total_num_envs: 100  # raise toward 500 for a fuller eval if memory allows
+    total_num_envs: 16  # 8/GPU. env(collocated w/ rollout) renders 256x256 on-GPU and is
+                        # the dominant memory user; 25/GPU OOMs a 32GB card. Raise cautiously,
+                        # or set MUJOCO_GL=osmesa (CPU render) to scale envs without GPU OOM.
     max_episode_steps: 480
     max_steps_per_rollout_epoch: 480
     group_size: 1
