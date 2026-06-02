@@ -2,6 +2,9 @@
 # Eval GR00T N1.5 on LIBERO.  Usage: bash run_eval.sh [spatial|long] [checkpoint]   (defaults: long, the task's SFT ckpt)
 set -eo pipefail
 
+# Activate the gr00t virtual environment
+source /opt/venv/gr00t/bin/activate
+
 export GROOT_CKPT_SPATIAL="/mnt/workspace/HUGGINGFACE_HOME/hub/RLinf-Gr00t-SFT-Spatial"
 export GROOT_CKPT_LONG="/mnt/workspace/HUGGINGFACE_HOME/hub/RLinf-Gr00t-SFT-Long"
 

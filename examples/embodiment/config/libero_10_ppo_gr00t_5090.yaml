@@ -100,7 +100,7 @@ env:
     use_fixed_reset_state_ids: True
     use_ordered_reset_state_ids: False
   eval:
-    total_num_envs: 100  # tuned down for 2x32GB (stock: 500)
+    total_num_envs: 16  # tuned down for 2x32GB (stock: 500)
     max_episode_steps: 480
     max_steps_per_rollout_epoch: 480
     group_size: 1
