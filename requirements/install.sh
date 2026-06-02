@@ -45,7 +45,6 @@ PLATFORM_FLASH_ATTN_PREBUILT=0
 DISABLE_FLASH_ATTN=0
 # Whether apply_torch_override should rewrite the pyproject.toml `torchcodec`
 # pin from ==0.2 to >=0.5. The ==0.2 line in override-dependencies has wheels
-# only for x86_64 + torch 2.5/2.6, so it breaks on AMD (torch 2.8 from rocm
 # index) and on Ascend (aarch64). Set per-platform by configure_<platform>.
 PLATFORM_RELAX_TORCHCODEC=0
 # Extra entries (full PEP 508 specifiers) inserted into the pyproject.toml
@@ -1234,6 +1233,10 @@ install_gr00t_model() {
             exit 1
             ;;
     esac
+    # NCCL 2.26.2 (bundled with torch 2.7.1) has a coalesced-broadcast bug on RTX 5090 / sm_120
+    # (Blackwell) that crashes multi-GPU FSDP training with "illegal memory access"; 2.27.7 fixes
+    # it. torch hard-pins ==2.26.2, so force the upgrade with --no-deps (NCCL 2.x is ABI-stable).
+    uv pip install --no-deps "nvidia-nccl-cu12==2.27.7"
     uv pip uninstall pynvml || true
 }
 
