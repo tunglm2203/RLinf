@@ -30,7 +30,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "libero_10_ppo_gr00t_5090"
+    experiment_name: ${oc.env:EXP_NAME,libero_10_ppo_gr00t_5090}
     logger_backends: ["wandb", "tensorboard"] # add "swanlab" if desired
     wandb_proxy: null  # set to an https proxy URL (e.g. http://host:port) if W&B needs one
 
