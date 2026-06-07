@@ -4,10 +4,12 @@ set -euo pipefail
 
 source /opt/venv/gr00t/bin/activate
 
-# W&B (online when a key is set, else offline)
+# W&B (online when a mode is set, else offline)
 export WANDB_API_KEY="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"
 export WANDB_ENTITY="tunglm"
-[ -z "$WANDB_API_KEY" ] && export WANDB_MODE="${WANDB_MODE:-offline}" || export WANDB_MODE="${WANDB_MODE:-online}"
+WANDB_MODE="disabled"
+
+EXP_NAME="gr00t15_libero10_ppo_flownoise_minimal_config"
 
 # SFT checkpoint (the config reads this env var)
 export GROOT_CKPT_LONG="/mnt/workspace/HUGGINGFACE_HOME/hub/RLinf-Gr00t-SFT-Long"
@@ -23,6 +25,7 @@ esac
 # Experiment name (drives the W&B run + logs/<EXP_NAME>/ dir; the config reads $EXP_NAME).
 # Defaults to the config name so runs don't collide. Override with: EXP_NAME=my_tag bash run_ppo.sh long
 export EXP_NAME="${EXP_NAME:-$CONFIG_NAME}"
+export WANDB_MODE="${WANDB_MODE:-disabled}"
 
 # Rendering / platform (venv: MuJoCo osmesa offscreen; ROBOT_PLATFORM sets action dim + normalization)
 export MUJOCO_GL=osmesa
