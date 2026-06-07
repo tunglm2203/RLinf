@@ -27,7 +27,7 @@ runner:
     logger_backends: ["wandb", "tensorboard"]
     wandb_proxy: null
 
-  max_epochs: 1000
+  max_epochs: 150   # For testing with minimal config
   max_steps: -1
 
   only_eval: True
