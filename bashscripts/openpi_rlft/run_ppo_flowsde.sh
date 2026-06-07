@@ -9,7 +9,7 @@ export WANDB_API_KEY="wandb_v1_M6No13dmfsCMWvVWTKHlUaD2aDK_yHc6cQ0NPsc12Cs8RSZbH
 export WANDB_ENTITY="tunglm"
 WANDB_MODE="online"
 
-EXP_NAME="pi05_libero10_ppo_flownoise_minimal_config"
+EXP_NAME="pi05_libero10_ppo_flowsde_minicfg"
 
 # SFT checkpoint (the config reads this env var, Pi0.5 uses ONE LIBERO checkpoint for all suites)
 export OPENPI_CKPT="/mnt/workspace/HUGGINGFACE_HOME/hub/RLinf-Pi05-LIBERO-SFT"
@@ -17,7 +17,7 @@ export OPENPI_CKPT="/mnt/workspace/HUGGINGFACE_HOME/hub/RLinf-Pi05-LIBERO-SFT"
 # Task -> config + checkpoint  (only 'long' is supported on the 5090 setup)
 TASK="${1:-long}"
 case "$TASK" in
-  long|libero_10|10) CONFIG_NAME="libero_10_ppo_openpi_pi05_5090"; CKPT="$OPENPI_CKPT" ;;
+  long|libero_10|10) CONFIG_NAME="libero_10_ppo_openpi_pi05_flowsde_5090"; CKPT="$OPENPI_CKPT" ;;
   *) echo "Unknown task '$TASK' (only 'long' is supported)" >&2; exit 1 ;;
 esac
 [ -d "$CKPT" ] || { echo "ERROR: checkpoint dir for '$TASK' not found: $CKPT" >&2; exit 1; }
