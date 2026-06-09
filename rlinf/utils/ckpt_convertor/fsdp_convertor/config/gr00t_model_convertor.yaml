@@ -1,0 +1,40 @@
+# Convert an RL (PPO) FSDP checkpoint of GR00T N1.5 into a HuggingFace-format dir
+# that the eval rollout worker can load via from_pretrained.
+#
+# The RL run saves weights at:
+#   <log_path>/<experiment_name>/checkpoints/global_step_<N>/actor/model_state_dict/full_weights.pt
+# This loads the GR00T architecture from the SFT base (for config + modeling code),
+# loads those trained weights into it, and re-saves as sharded safetensors + config.
+#
+# bashscripts/groot_rlft/run_eval.sh drives this and passes the per-run overrides
+# (convertor.ckpt_path, convertor.save_path, model.model_path, model.num_action_chunks).
+defaults:
+  - model/gr00t@model
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:REPO_PATH}/examples/embodiment/config
+
+convertor:
+  # full_weights.pt produced by the RL run (see path above).
+  ckpt_path: ${oc.env:GROOT_RL_CKPT_PT,/path/to/global_step_N/actor/model_state_dict/full_weights.pt}
+  # Output HF dir to write (then point $GROOT_EVAL_CKPT here for eval).
+  save_path: ${oc.env:GROOT_HF_OUT,/path/to/gr00t_rl_hf}
+  merge_lora_weighs: False
+
+# Override the defaults in model/gr00t
+model:
+  model_type: "gr00t"
+  # SFT base, used only for the architecture/config + modeling code (.py/.json).
+  model_path: ${oc.env:GROOT_SFT_BASE,/path/to/RLinf-Gr00t-SFT-Spatial}
+  is_lora: False
+  add_value_head: True          # RL checkpoint contains the value head; match it here
+  num_action_chunks: 5          # 5 for spatial, 10 for libero_10 (run_eval.sh overrides)
+  # model/gr00t mounts at top-level `model` here (not actor.model), so this
+  # nested interpolation (${actor.model.add_value_head}) has no target -> pin it.
+  rl_head_config:
+    add_value_head: True
