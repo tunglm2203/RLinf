@@ -1,9 +1,13 @@
 # CLAUDE.md
 
-This is the behavioral entrypoint for Claude Code.
+This file is the Claude entrypoint for repository guidance.
 
 # 1. Development
-You MUST read `AGENTS.md` for run commands, multi-node setup, OOM debugging, and step-by-step extension tutorials *before* writing architecture-altering code. 
+For the canonical agent instructions, repository orientation, and workflow expectations, see [AGENTS.md](AGENTS.md).
+
+For full contribution flow, code style, and PR process, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Keeping the detailed guidance in `AGENTS.md` avoids duplication and prevents the two files from drifting out of sync. 
 
 # 2. Quality Guardrails
 
