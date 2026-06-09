@@ -490,8 +490,16 @@ class EnvWorker(Worker):
         )
         env_info = {}
 
+        # Snapshot per-env task ids BEFORE stepping: with auto_reset, chunk_step resets a
+        # finished env and updates self.task_ids to the next episode; the snapshot still holds
+        # the task of the episode that completes in this chunk (task_id only changes at reset).
+        eval_env = self.eval_env_list[stage_id]
+        task_ids_snap = (
+            eval_env.task_ids.copy() if hasattr(eval_env, "task_ids") else None
+        )
+
         obs_list, _, chunk_terminations, chunk_truncations, infos_list = (
-            self.eval_env_list[stage_id].chunk_step(chunk_actions)
+            eval_env.chunk_step(chunk_actions)
         )
         if isinstance(obs_list, (list, tuple)):
             extracted_obs = obs_list[-1] if obs_list else None
@@ -524,6 +532,11 @@ class EnvWorker(Worker):
             elif "episode" in infos:
                 for key in infos["episode"]:
                     env_info[key] = infos["episode"][key][newly_done].cpu()
+            # Tag each completed trajectory with its task id (for per-task eval metrics).
+            if task_ids_snap is not None and env_info:
+                env_info["task_id"] = torch.as_tensor(
+                    task_ids_snap[newly_done.cpu().numpy()]
+                )
 
         env_output = EnvOutput(
             obs=extracted_obs,
@@ -1233,6 +1246,20 @@ class EnvWorker(Worker):
 
     def evaluate(self, input_channel: Channel, rollout_channel: Channel):
         eval_metrics = defaultdict(list)
+
+        # Log the task-index -> task-name table once (rank 0), so per-task eval keys
+        # (per_task/success_once/task_<k>) are decodable. Only for envs with a task_suite.
+        if self._rank == 0 and not getattr(self, "_task_name_table_logged", False):
+            eval_env = self.eval_env_list[0] if self.eval_env_list else None
+            if eval_env is not None and hasattr(eval_env, "task_suite"):
+                from rlinf.utils.logging import get_logger
+
+                table = {
+                    k: eval_env.task_suite.get_task(k).language
+                    for k in range(eval_env.task_suite.get_num_tasks())
+                }
+                get_logger().info(f"[eval] task index -> name: {table}")
+            self._task_name_table_logged = True
 
         for eval_rollout_epoch in range(self.cfg.algorithm.eval_rollout_epoch):
             if not self.cfg.env.eval.auto_reset or eval_rollout_epoch == 0:

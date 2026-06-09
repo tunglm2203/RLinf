@@ -99,15 +99,52 @@ def compute_evaluate_metrics(eval_metrics_list):
         if metric:
             all_eval_metrics[env_info_key] = metric
 
-    for key in all_eval_metrics:
-        shards = [_normalize_metric_shard(s) for s in all_eval_metrics[key]]
-        stacked = torch.concat(shards).float()
+    # Concatenate per-trajectory shards once per key. Keys are aligned across the
+    # trajectory axis (each env_evaluate_step appends them together under the same
+    # newly_done mask, and shards are gathered in the same process order here).
+    concatenated = {
+        key: torch.concat([_normalize_metric_shard(s) for s in all_eval_metrics[key]])
+        for key in all_eval_metrics
+    }
+
+    # Per-task breakdown: LIBERO eval emits an aligned "task_id" key (one per trajectory).
+    # Group the success metrics by task index. Use a "per_task/" prefix so e.g.
+    # eval/success_once (scalar) and eval/per_task/success_once/task_3 don't collide.
+    task_ids = concatenated.pop("task_id", None)
+    per_task_metrics = {}
+    if task_ids is not None and task_ids.numel() > 0:
+        task_ids = task_ids.round().long()
+        for metric_key in ("success_once", "success_at_end"):
+            if metric_key not in concatenated:
+                continue
+            vals = concatenated[metric_key]
+            macro = []
+            for t in torch.unique(task_ids).tolist():
+                mask = task_ids == t
+                rate = vals[mask].mean().item()
+                per_task_metrics[f"per_task/{metric_key}/task_{t}"] = np.asarray(
+                    rate, dtype=np.float64
+                )
+                per_task_metrics[f"per_task/num_trajectories/task_{t}"] = int(
+                    mask.sum().item()
+                )
+                macro.append(rate)
+            if macro:
+                per_task_metrics[f"{metric_key}_macro"] = np.asarray(
+                    sum(macro) / len(macro), dtype=np.float64
+                )
+
+    # Aggregate (micro-mean) every remaining key over all trajectories, as before.
+    all_eval_metrics = {}
+    for key, stacked in concatenated.items():
+        stacked = stacked.float()
         all_eval_metrics[key] = (
             stacked.mean().detach().cpu().numpy()
             if stacked.numel() > 0
             else np.asarray(0.0, dtype=np.float64)
         )
 
+    all_eval_metrics.update(per_task_metrics)
     # Add total trajectory count to metrics
     all_eval_metrics["num_trajectories"] = sum(trajectory_counts)
 
