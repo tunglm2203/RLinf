@@ -71,7 +71,7 @@ algorithm:
   sampling_params:
     do_sample: False  # tung: For eval-only
     temperature_train: 1.0
-    temperature_eval: 0.6
+    temperature_eval: 0.0 # tung: For eval-only
     top_k: 50
     top_p: 1.0
     repetition_penalty: 1.0
