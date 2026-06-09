@@ -89,6 +89,9 @@ class MultiStepRolloutWorker(Worker):
         self._sync_weight_comm_options = self.weight_syncer.comm_options
 
     def init_worker(self):
+        # Added this to ensure reproducibility (tested in LIBERO)
+        from rlinf.utils.utils import seed_everything
+        seed_everything(self.cfg.actor.seed + self._rank)  # +rank: distinct-but-fixed stream per GPU
         rollout_model_config = copy.deepcopy(self.cfg.actor.model)
         with open_dict(rollout_model_config):
             rollout_model_config.precision = self.cfg.rollout.model.precision
