@@ -93,7 +93,7 @@ env:
     max_steps_per_rollout_epoch: 480
     reward_coef: ${algorithm.reward_coef}
   eval:
-    total_num_envs: 64    # tung: For eval-only
+    total_num_envs: 100    # tung: eval-only
     auto_reset: True
     ignore_terminations: True
     max_episode_steps: 480
