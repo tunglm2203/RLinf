@@ -1,26 +1,51 @@
 #!/bin/bash
-# Eval GR00T N1.5 on LIBERO.  Usage: bash run_eval.sh [spatial|long] [checkpoint]   (defaults: long, the task's SFT ckpt)
-set -eo pipefail
+# Eval GR00T N1.5 on LIBERO.
+set -euo pipefail
 
-# Activate the gr00t virtual environment
+export PYTHONPATH="${PYTHONPATH:-}"   # the venv's activate references $PYTHONPATH; guard it under `set -u`
 source /opt/venv/gr00t/bin/activate
 
-export GROOT_CKPT_SPATIAL="/mnt/workspace/HUGGINGFACE_HOME/hub/RLinf-Gr00t-SFT-Spatial"
+WANDB_MODE="disabled"   # Keep this to disable log wandb online
+
+
+# =========== USER's SETUP ============================================================================================
+NUM_EPISODES=100   # total eval episodes (balanced across the 10 LIBERO-10 tasks)
+ENVS=100           # envs run concurrently (gr00t fits 100 on 2x32GB; lower to e.g. 20 if you OOM)
+
+EXP_NAME="gr00t15_libero10_sft_eval"
+#EXP_NAME="gr00t15_libero10_ppo_flowsde_minicfg_lropenpi"
+
+#EVAL_CKPT_PATH="/mnt/workspace/vla_bench/RLinf/logs/gr00t15_libero10_ppo_flowsde_minicfg_lropenpi/gr00t15_libero10_ppo_flowsde_minicfg_lropenpi/checkpoints/global_step_150"
+# ====================================================================================================================
+
+# --- guards: keep per-task counts balanced and the episode split exact (same checks as openpi run_eval.sh) ---
+NUM_TASKS=10
+NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l); NUM_GPUS=${NUM_GPUS:-1}
+(( ENVS % (NUM_TASKS*NUM_GPUS) == 0 )) || { echo "ENVS must be a multiple of num_tasks*gpus ($((NUM_TASKS*NUM_GPUS))) for even per-task split" >&2; exit 1; }
+(( NUM_EPISODES % ENVS == 0 ))         || { echo "NUM_EPISODES must be a multiple of ENVS ($ENVS)" >&2; exit 1; }
+N_EVAL_ITERS=$(( NUM_EPISODES / ENVS ))
+
+# SFT base checkpoint: Keep this even when evaluating an RL checkpoint, it builds the model and supplies norm stats
 export GROOT_CKPT_LONG="/mnt/workspace/HUGGINGFACE_HOME/hub/RLinf-Gr00t-SFT-Long"
 
 # Task -> config + SFT base + action-chunk count
-TASK="${1:-${EVAL_TASK:-long}}"
+TASK="${1:-long}"
 case "$TASK" in
-  spatial)           CONFIG_NAME="libero_spatial_ppo_gr00t_5090_eval"; SFT_BASE="$GROOT_CKPT_SPATIAL"; CHUNKS=5 ;;
   long|libero_10|10) CONFIG_NAME="libero_10_ppo_gr00t_5090_eval";      SFT_BASE="$GROOT_CKPT_LONG";    CHUNKS=10 ;;
   *) echo "Unknown task '$TASK' (expected: spatial | long)" >&2; exit 1 ;;
 esac
+[ -d "$GROOT_CKPT_LONG" ] || { echo "ERROR: SFT base not found: $GROOT_CKPT_LONG" >&2; exit 1; }
+
 CKPT="${2:-${EVAL_CKPT_PATH:-$SFT_BASE}}"; CKPT="${CKPT%/}"
 
-export REPO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-export EMBODIED_PATH="${REPO_PATH}/examples/embodiment"
-cd "$REPO_PATH"
+# Distinct run/log dir per checkpoint so SFT and PPO evals don't clobber each other (openpi keys on EXP_NAME too).
+# For a PPO ckpt (.../<run>/checkpoints/global_step_N) include <run> so different runs' global_step_N don't collide.
+CKPT_TAG="$(basename "$CKPT")"
+case "$CKPT_TAG" in
+  global_step_*) CKPT_TAG="$(basename "$(dirname "$(dirname "$CKPT")")")_${CKPT_TAG}" ;;
+esac
 
+REPO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$REPO_PATH"
 # HF dir (has config.json) -> eval directly; else an RL full_weights.pt -> convert to HF first.
 if [ -f "$CKPT/config.json" ]; then
   EVAL_CKPT="$CKPT"
@@ -40,23 +65,27 @@ else
 fi
 export GROOT_EVAL_CKPT="$EVAL_CKPT"
 
+# Experiment name (drives the W&B run + logs/<EXP_NAME>/ dir; the config reads $EXP_NAME).
+export EXP_NAME="${EXP_NAME:-${CONFIG_NAME}_${CKPT_TAG}}"
+export WANDB_MODE="${WANDB_MODE:-disabled}"
+
 # Rendering / platform / memory (egl verified on this box; expandable_segments avoids frag OOM)
-export MUJOCO_GL=${MUJOCO_GL:-egl}
-export PYOPENGL_PLATFORM=${PYOPENGL_PLATFORM:-egl}
-export ROBOT_PLATFORM=${ROBOT_PLATFORM:-LIBERO}
-export LIBERO_TYPE=${LIBERO_TYPE:-standard}
-export PYTHONPATH=${REPO_PATH}:${PYTHONPATH}
+export MUJOCO_GL=osmesa
+export PYOPENGL_PLATFORM=osmesa
+export ROBOT_PLATFORM=LIBERO
+export LIBERO_TYPE=standard
 export HYDRA_FULL_ERROR=1
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
-# W&B: offline unless a valid key is exported
-export WANDB_API_KEY="${WANDB_API_KEY:-}"
-export WANDB_ENTITY="${WANDB_ENTITY:-}"
-[ -z "$WANDB_API_KEY" ] && export WANDB_MODE="${WANDB_MODE:-offline}" || export WANDB_MODE="${WANDB_MODE:-online}"
+export EMBODIED_PATH="${REPO_PATH}/examples/embodiment"   # config searchpath uses ${oc.env:EMBODIED_PATH}
+export PYTHONPATH="${REPO_PATH}:${PYTHONPATH}"            # eval entrypoint imports rlinf from the repo
+LOG_DIR="logs/${EXP_NAME}"; mkdir -p "$LOG_DIR"
+echo "Task=$TASK  Config=$CONFIG_NAME  Exp=$EXP_NAME  Episodes=${NUM_EPISODES} (envs=${ENVS} x iters=${N_EVAL_ITERS})  Checkpoint=$GROOT_EVAL_CKPT"
 
-LOG_DIR="${REPO_PATH}/logs/${CONFIG_NAME}"
-mkdir -p "$LOG_DIR"
-echo "Task=$TASK  Config=$CONFIG_NAME  Checkpoint=$GROOT_EVAL_CKPT"
-RAY_DEBUG="legacy" python "${EMBODIED_PATH}/eval_embodied_agent.py" \
-  --config-path "${EMBODIED_PATH}/config" --config-name "${CONFIG_NAME}" \
-  runner.logger.log_path="${LOG_DIR}" 2>&1 | tee "${LOG_DIR}/eval_embodiment.log"
+# Eval has its own entrypoint (EmbodiedEvalRunner). --config-path is absolute: Hydra resolves
+# it relative to the .py file, not the cwd.
+RAY_DEBUG=${RAY_DEBUG:-legacy} python examples/embodiment/eval_embodied_agent.py \
+  --config-path "${REPO_PATH}/examples/embodiment/config" --config-name "${CONFIG_NAME}" \
+  runner.logger.log_path="${LOG_DIR}" \
+  env.eval.total_num_envs="${ENVS}" algorithm.eval_rollout_epoch="${N_EVAL_ITERS}" \
+  2>&1 | tee "${LOG_DIR}/eval_embodiment.log"
