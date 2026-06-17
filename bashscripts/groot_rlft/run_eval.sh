@@ -10,12 +10,12 @@ WANDB_MODE="disabled"   # Keep this to disable log wandb online
 
 # =========== USER's SETUP ============================================================================================
 NUM_EPISODES=100   # total eval episodes (balanced across the 10 LIBERO-10 tasks)
-ENVS=100           # envs run concurrently (gr00t fits 100 on 2x32GB; lower to e.g. 20 if you OOM)
+ENVS=20            # envs run concurrently (gr00t fits 100 on 2x32GB; lower to e.g. 20 if you OOM)
 
-EXP_NAME="gr00t15_libero10_sft_eval"
-#EXP_NAME="gr00t15_libero10_ppo_flowsde_minicfg_lropenpi"
+#EXP_NAME="gr00t15_libero10_sft_eval"
+EXP_NAME="gr00t15_libero10_ppo_flowsde_minicfg_lropenpi_eval"
 
-#EVAL_CKPT_PATH="/mnt/workspace/vla_bench/RLinf/logs/gr00t15_libero10_ppo_flowsde_minicfg_lropenpi/gr00t15_libero10_ppo_flowsde_minicfg_lropenpi/checkpoints/global_step_150"
+EVAL_CKPT_PATH="/mnt/workspace/vla_bench/RLinf/logs/gr00t15_libero10_ppo_flowsde_minicfg_lropenpi/gr00t15_libero10_ppo_flowsde_minicfg_lropenpi/checkpoints/global_step_150"
 # ====================================================================================================================
 
 # --- guards: keep per-task counts balanced and the episode split exact (same checks as openpi run_eval.sh) ---
@@ -45,7 +45,7 @@ case "$CKPT_TAG" in
   global_step_*) CKPT_TAG="$(basename "$(dirname "$(dirname "$CKPT")")")_${CKPT_TAG}" ;;
 esac
 
-REPO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$REPO_PATH"
+export REPO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$REPO_PATH"
 # HF dir (has config.json) -> eval directly; else an RL full_weights.pt -> convert to HF first.
 if [ -f "$CKPT/config.json" ]; then
   EVAL_CKPT="$CKPT"
