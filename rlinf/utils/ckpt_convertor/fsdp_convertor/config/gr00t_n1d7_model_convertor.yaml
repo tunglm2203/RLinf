@@ -1,0 +1,53 @@
+# Convert an RL (PPO) FSDP checkpoint of GR00T N1.7 into a HuggingFace-format dir
+# that the eval rollout worker can load via from_pretrained.
+#
+# The RL run saves weights at:
+#   <log_path>/<experiment_name>/checkpoints/global_step_<N>/actor/model_state_dict/full_weights.pt
+# This loads the GR00T N1.7 architecture (config + processor/stats JSON + modeling code
+# from the SFT base), loads those trained weights into it, and re-saves as sharded
+# safetensors + config.
+#
+# N1.7 differs from N1.5 (gr00t_model_convertor.yaml) in two ways:
+#   1. model_type: gr00t_n1d7 (defaults: model/gr00t_n1d7) -> dispatches to the N1.7 builder.
+#   2. a SEPARATE VLM backbone (Cosmos-Reason2-2B) must be supplied via
+#      model.backbone_model_path so get_model() can construct the model before the
+#      trained weights are loaded over it. The exported safetensors hold the full state
+#      dict (backbone + DiT head + value head), so eval restores everything; the backbone
+#      path only provides the initial scaffold + config/processor at build time.
+#
+# bashscripts/groot_rlft/run_eval_gr00t_n1d7.sh drives this and passes the per-run
+# overrides (convertor.ckpt_path, convertor.save_path, model.model_path,
+# model.backbone_model_path, model.num_action_chunks).
+defaults:
+  - model/gr00t_n1d7@model
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:REPO_PATH}/examples/embodiment/config
+
+convertor:
+  # full_weights.pt produced by the RL run (see path above).
+  ckpt_path: ${oc.env:GROOT_N1D7_RL_CKPT_PT,/path/to/global_step_N/actor/model_state_dict/full_weights.pt}
+  # Output HF dir to write (then point $GROOT_N1D7_EVAL_CKPT here for eval).
+  save_path: ${oc.env:GROOT_N1D7_HF_OUT,/path/to/gr00t_n1d7_rl_hf}
+  merge_lora_weighs: False
+
+# Override the defaults in model/gr00t_n1d7
+model:
+  model_type: "gr00t_n1d7"
+  # SFT base, used only for the architecture/config + processor/stats JSON + modeling code.
+  model_path: ${oc.env:GROOT_N1D7_SFT_BASE,/path/to/GR00T-N1.7-LIBERO/libero_10}
+  # Separate VLM backbone (Cosmos-Reason2-2B). REQUIRED for N1.7 model construction.
+  backbone_model_path: ${oc.env:GROOT_N1D7_BACKBONE,/path/to/Cosmos-Reason2-2B}
+  embodiment_tag: "libero_sim"
+  is_lora: False
+  add_value_head: True          # RL checkpoint contains the value head; match it here
+  num_action_chunks: 16         # run_eval_gr00t_n1d7.sh overrides
+  # model/gr00t_n1d7 mounts at top-level `model` here (not actor.model), so this
+  # nested interpolation (${actor.model.add_value_head}) has no target -> pin it.
+  rl_head_config:
+    add_value_head: True
