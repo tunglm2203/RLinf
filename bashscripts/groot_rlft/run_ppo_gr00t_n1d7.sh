@@ -14,7 +14,7 @@ export WANDB_ENTITY="tunglm"
 # Defaults to online if a key is present, else offline (local only).
 if [ -n "${WANDB_API_KEY:-}" ]; then export WANDB_MODE="${WANDB_MODE:-online}"; else export WANDB_MODE="${WANDB_MODE:-offline}"; fi
 
-EXP_NAME="gr00t17_libero10_ppo_flowsde_lropenpi"
+EXP_NAME="${EXP_NAME:-gr00t17_libero10_ppo_flowsde_lropenpi}"
 
 # N1.7 checkpoint (official NVIDIA bootstrap) + VLM backbone. Override via env if your paths differ.
 export GROOT_N1D7_CKPT="${GROOT_N1D7_CKPT:-/mnt/workspace/HUGGINGFACE_HOME/hub/GR00T-N1.7-LIBERO/libero_10}"

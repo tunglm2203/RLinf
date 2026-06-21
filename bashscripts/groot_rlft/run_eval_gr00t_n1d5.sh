@@ -1,21 +1,20 @@
 #!/bin/bash
-# Eval GR00T N1.5 on LIBERO.
+# Eval GR00T N1.x on LIBERO-10
 set -euo pipefail
 
 export PYTHONPATH="${PYTHONPATH:-}"   # the venv's activate references $PYTHONPATH; guard it under `set -u`
 source /opt/venv/gr00t/bin/activate
 
-WANDB_MODE="disabled"   # Keep this to disable log wandb online
-
+WANDB_MODE="disabled"   # keep eval local (no wandb upload)
 
 # =========== USER's SETUP ============================================================================================
 NUM_EPISODES=100   # total eval episodes (balanced across the 10 LIBERO-10 tasks)
-ENVS=20            # envs run concurrently (gr00t fits 100 on 2x32GB; lower to e.g. 20 if you OOM)
+ENVS=20            # envs run concurrently
 
-#EXP_NAME="gr00t15_libero10_sft_eval"
-EXP_NAME="gr00t15_libero10_ppo_flowsde_minicfg_lropenpi_eval"
+# Eval horizon (episode-step truncation), overridable; config default is 480.
+MAX_EPISODE_STEPS="${MAX_EPISODE_STEPS:-480}"
 
-EVAL_CKPT_PATH="/mnt/workspace/vla_bench/RLinf/logs/gr00t15_libero10_ppo_flowsde_minicfg_lropenpi/gr00t15_libero10_ppo_flowsde_minicfg_lropenpi/checkpoints/global_step_150"
+#EVAL_CKPT_PATH="${EVAL_CKPT_PATH:-/mnt/workspace/vla_bench/RLinf/logs/gr00t15_libero10_ppo_flowsde_minicfg_lropenpi/gr00t15_libero10_ppo_flowsde_minicfg_lropenpi/checkpoints/global_step_150}"
 # ====================================================================================================================
 
 # --- guards: keep per-task counts balanced and the episode split exact (same checks as openpi run_eval.sh) ---
@@ -31,15 +30,17 @@ export GROOT_CKPT_LONG="/mnt/workspace/HUGGINGFACE_HOME/hub/RLinf-Gr00t-SFT-Long
 # Task -> config + SFT base + action-chunk count
 TASK="${1:-long}"
 case "$TASK" in
-  long|libero_10|10) CONFIG_NAME="libero_10_ppo_gr00t_5090_eval";      SFT_BASE="$GROOT_CKPT_LONG";    CHUNKS=10 ;;
+  long|libero_10|10) CONFIG_NAME="libero_10_ppo_gr00t_5090_eval";      SFT_BASE="$GROOT_CKPT_LONG";    CHUNKS="${CHUNKS:-10}" ;;
   *) echo "Unknown task '$TASK' (expected: spatial | long)" >&2; exit 1 ;;
 esac
 [ -d "$GROOT_CKPT_LONG" ] || { echo "ERROR: SFT base not found: $GROOT_CKPT_LONG" >&2; exit 1; }
 
+# Experiment name follows the chunk/horizon rule (overridable via EXP_NAME=...).
+EXP_NAME="${EXP_NAME:-eval_gr00t15_libero10_sft_chunk${CHUNKS}_horizon${MAX_EPISODE_STEPS}}"
+
 CKPT="${2:-${EVAL_CKPT_PATH:-$SFT_BASE}}"; CKPT="${CKPT%/}"
 
-# Distinct run/log dir per checkpoint so SFT and PPO evals don't clobber each other (openpi keys on EXP_NAME too).
-# For a PPO ckpt (.../<run>/checkpoints/global_step_N) include <run> so different runs' global_step_N don't collide.
+# Distinct run/log dir per checkpoint so SFT and PPO evals don't clobber each other
 CKPT_TAG="$(basename "$CKPT")"
 case "$CKPT_TAG" in
   global_step_*) CKPT_TAG="$(basename "$(dirname "$(dirname "$CKPT")")")_${CKPT_TAG}" ;;
@@ -82,10 +83,11 @@ export PYTHONPATH="${REPO_PATH}:${PYTHONPATH}"            # eval entrypoint impo
 LOG_DIR="logs/${EXP_NAME}"; mkdir -p "$LOG_DIR"
 echo "Task=$TASK  Config=$CONFIG_NAME  Exp=$EXP_NAME  Episodes=${NUM_EPISODES} (envs=${ENVS} x iters=${N_EVAL_ITERS})  Checkpoint=$GROOT_EVAL_CKPT"
 
-# Eval has its own entrypoint (EmbodiedEvalRunner). --config-path is absolute: Hydra resolves
-# it relative to the .py file, not the cwd.
 RAY_DEBUG=${RAY_DEBUG:-legacy} python examples/embodiment/eval_embodied_agent.py \
   --config-path "${REPO_PATH}/examples/embodiment/config" --config-name "${CONFIG_NAME}" \
   runner.logger.log_path="${LOG_DIR}" \
   env.eval.total_num_envs="${ENVS}" algorithm.eval_rollout_epoch="${N_EVAL_ITERS}" \
+  actor.model.num_action_chunks="${CHUNKS}" \
+  env.eval.max_episode_steps="${MAX_EPISODE_STEPS}" \
+  env.eval.max_steps_per_rollout_epoch="${MAX_EPISODE_STEPS}" \
   2>&1 | tee "${LOG_DIR}/eval_embodiment.log"
