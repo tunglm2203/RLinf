@@ -32,6 +32,7 @@ research/collected_rollouts/
 # --- Value-head: dataset & cached dataset (TEMPORARILY excluded — data, not source) ---
 # feature cache + decoded frames (~45 GB)
 vr_value_head/cache/
+vr_value_head/cache_libero/
 vr_value_head/runs/
 # ego dataset sample bundle
 ego_dataset_example/

@@ -28,34 +28,21 @@ Stages: ego-centric pretrain → robot pretrain (OXE) → SFT on demos (action e
 
 ## Guiding principle: DO NOT serialize behind backbone pretraining
 
-The value-head design can be **falsified or validated with a frozen off-the-shelf VLM**. Backbone
-pretraining (Qwen3.5-VL-0.8B on ego + OXE) is a multi-GPU-week job that is *not* feasible on
-2×RTX-5090 and must not gate the research question.
+The value-head design can be **validated with a frozen off-the-shelf VLM** — no need to wait on
+backbone pretraining (Qwen3.5-VL-0.8B on ego + OXE), which is a multi-GPU-week cluster job.
 
 ```
 track A (cheap, 2 GPUs) : value-head design  ── M0 → M6 ──►  validated recipe
 track B (cluster)       : backbone pretrain  ────────────►  swap in when ready
 ```
 
-Run track A on a frozen public VLM (Qwen3-VL-4B, or your 0.8B base once it exists). Every milestone
-below is backbone-agnostic: if the design works on a frozen public VLM, it will work better on your
-pretrained one. If it fails there, pretraining will not save it.
+Every milestone here is backbone-agnostic: if the design works on a frozen VLM it will work better
+on your pretrained one; if it fails there, pretraining will not save it.
 
----
-
-## Kill criteria (read this first)
-
-Stop and rethink — do not proceed to the next milestone — if:
-
-| signal | meaning |
-|---|---|
-| M1 linear probe ρ < 0.3 | pooled VLM features do not encode progress → fix features/pooling, not data |
-| M2 language-sensitivity ≈ 0 (matched-frame) | head ignores the instruction; it is an image-only clock, not a reward model |
-| M2 time-warp collapses the head | it *was* a clock; ego pretraining fit a stopwatch → the whole approach, not the data |
-| M2 paraphrase spread ≳ per-chunk Δ | Φ jitters on rewording more than on progress → unusable as shaping reward at any ρ |
-| M3 ego-pretrain gives no gain over from-scratch | ego data is not buying transfer → drop it, train in-domain only |
-| M4 success/failure AUROC < 0.7 | head cannot tell success from failure → useless as RL reward |
-| M6 reward ↑ but success ↓ | reward hacking → tighten shaping, keep sparse anchor |
+> **Status:** track A is running on the **frozen Cosmos-Reason2-2B** backbone. **M0–M2 are validated
+> this way** (locked M2 head: test ρ 0.32, language-sensitivity 0.31). ρ ~0.3 is the *frozen-feature
+> ceiling* — expected, not a failure; **backbone fine-tuning (track B) is the lever to raise it**, and
+> stays deferred. Read every ρ below as a frozen-backbone number unless noted.
 
 ---
 
@@ -165,7 +152,7 @@ fails, revisit the span — prefix-only is the fallback and buys back the PBRS g
 |---|---|
 | Huber on `local_progress` | the base signal |
 | **pairwise ranking** within a segment | absolute progress values do not cross the ego→robot gap; order does |
-| **wrong-sub-goal negative** (matched frames, different goal) | language sensitivity — the untested M2 kill criterion |
+| **wrong-sub-goal negative** (matched frames, different goal) | language sensitivity — the core M2 check that the head reads the sub-goal, not a clock |
 | **paraphrase consistency** (same frames, reworded sub-goal → small L2) | paraphrase jitter entering the reward as spurious Δ. Load-bearing under postfix, since the varying text sits *inside* the pooled feature |
 | **time-warp augmentation** (non-uniform temporal resampling) | **the clock.** Decorrelates elapsed-frame index from true progress while visual progress is unchanged → a clock baseline collapses, a vision head is unaffected. Converts "we hope it isn't a clock" into "it structurally cannot be one" |
 
@@ -210,20 +197,112 @@ measurable on the **LIBERO segments we already have**, before any ego pretrainin
 
 ## M3 — Cross-domain transfer  *(1 week)*  ← the make-or-break for using ego data
 
-Tests the assumption that human ego video helps a robot progress head.
+Tests the assumption that human ego video helps a robot progress head. The naive version
+("train on ego, test on robot, look at ρ") is confounded by the **clock** (strong on successful
+robot data) and by **data budget** (more training ≠ ego knowledge). The protocol below controls both.
 
-**Do**: three-way comparison on the *same* robot eval set (OXE subset and/or your LIBERO demos):
-| arm | training |
-|---|---|
-| A | ego-only, zero-shot on robot |
-| B | from-scratch on robot data (no ego) |
-| C | ego-pretrained → finetuned on the same robot data as B |
+**Three arms** — same frozen backbone, same head, evaluated on the *same* held-out robot test set
+(LIBERO-10 segments, which carry **predicate-grounded** local progress + sub-goals — a real target,
+not a time proxy):
 
-**GO**: **C > B** by a clear margin at equal robot-data budget (e.g. ρ +0.1), *or* C reaches B's
-ρ using ≤ 30% of the robot data. Zero-shot A ρ ≥ 0.4 is a bonus, not required.
+| arm | training | tests |
+|---|---|---|
+| **A — scratch** | head trained on **robot-train only** | the in-domain baseline |
+| **B — transfer** | head **pretrained on ego → finetuned on the same robot-train as A** | does ego help? |
+| **C — ego zero-shot** | head trained on **ego only**, no robot training | is there *any* transferable signal? |
 
-**NO-GO**: C ≈ B → ego pretraining buys nothing. That is a legitimate, valuable negative result:
-drop the ego stage for the value head and invest in in-domain data instead.
+The load-bearing comparison is **B vs A at equal robot-data budget**. The primary result is a
+**data-efficiency curve** (ρ vs robot-budget k), not a single number — pretraining helps most when
+target data is scarce, so the gap at low k is the money result.
+
+### Phase 2 — the sweep loop
+
+```python
+for seed in {s1}:                                    # SINGLE seed (first pass; no error bars)
+    head_ego = train(ProgressHead(seed), ego_cache)  # PHASE 1: pretrain once per seed on FULL ego
+
+    for k in {1, 2, 5, 10}:                          # robot demos/task (budget)
+        # PER-TASK CAP: task 0 has only ~9 clean eps -> cap at 5; all other tasks up to 10.
+        cap = {0: 5}          # default 10
+        robot_train_k = {task: sample(pool[task], min(k, cap.get(task, 10)), seed)
+                         for task in tasks}          # fixed subset per (k, seed)
+
+        # Arm A — scratch:   random init, robot-only
+        head_A = train(ProgressHead(seed), robot_train_k)
+
+        # Arm B — transfer:  ego init, SAME robot data + SAME schedule as A (only init differs)
+        head_B = finetune(copy(head_ego), robot_train_k)
+
+        for arm, head in {"A": head_A, "B": head_B}:
+            record(seed, k, arm, eval(head, robot_test))     # rho, rho-clock, lang_sens, [AUROC]
+
+    record(seed, "C", eval(head_ego, robot_test))    # Arm C — ego zero-shot (k-independent)
+```
+
+**The one control that makes it fair:** at each `k`, A and B see the *identical* `robot_train_k`
+and the *identical* epochs / LR / early-stop-on-val — **only the initialization differs**. Any gap
+is then ego knowledge, not extra training. (Optional ablation B′: pretrain on **label-shuffled**
+ego — same init, no signal; if B > B′ the gain is knowledge, not warm init.)
+
+### Flow
+
+```
+                    +----------------- PHASE 0 . ONE-TIME SETUP -----------------+
+ egoverse (500 eps) -| extract_features (FROZEN Cosmos-Reason2-2B) |-> ego feature cache
+ LIBERO-10 segments -| extract_features (SAME backbone)            |-> robot feature cache
+                    +---------------------------------------------+   (predicate-grounded
+                                        |                             progress + sub-goals)
+                                        v
+        robot split (FIXED once):   robot_test  (held out, never trained)
+                                    robot_train_pool  (subsample source)
+                                        |
+   ============================ LOOP over seed in {s1}  (single-seed first pass) ============================
+   ||                                                                                  ||
+   ||  PHASE 1 . PRETRAIN (once/seed):  head_ego <- train ProgressHead on FULL ego     ||
+   ||                                                                                  ||
+   ||  PHASE 2 .  +--- for k in {1,2,5,10} demos/task (task0 capped @5) ----+          ||
+   ||            |  robot_train_k <- sample(robot_train_pool, k, seed)      |          ||
+   ||            |                                                          |          ||
+   ||            |  Arm A (scratch) : head_A <- train(random, train_k) --+  |          ||
+   ||            |  Arm B (transfer): head_B <- finetune(head_ego,train_k)+--> EVAL on ||
+   ||            |     ^ SAME data + SAME epochs/LR/early-stop; init differs| robot_test||
+   ||            +----------------------------------------------------------+    |     ||
+   ||                                                                            v     ||
+   ||  Arm C (ego zero-shot): EVAL(head_ego, robot_test)  [k-indep]   rho . rho-clock .||
+   ||                                                                 lang_sens . AUROC||
+   ======================================================================================
+                                        |
+                                        v
+        aggregate over seeds -> mean +/- std per (arm, k)
+                                        |
+                                        v
+     rho|        ____B____                    PLOT: rho vs k
+        |    _B_/    _A___   <- B above A        A,B curves (+ error band)
+        |  B/  __A__/          at low k = win    C, clock = reference lines
+        |_A__/  . . . . C (ego zero-shot) . . .
+        | - - - - - - - clock floor - - - - - -
+        +-------------------------------> k
+                                        |
+                                        v
+   DECISION -- B >> A at low k (>=+0.1 rho) OR B matches A with <=30% data -> GO  (ego helps)
+             +- B ~= A everywhere -------------------------------------------> NO-GO (drop ego@head)
+```
+
+**Metrics** (on `robot_test`, episode/task-level split, 1 seed for the first pass — no error bars; add seeds later for mean±std): per-segment ρ reported
+**vs the clock** (`ρ − ρ_clock`); `language_sensitivity`; and — sharpest — **failure-detection AUROC**
+on failed rollouts, where the clock is *wrong* so any B>A is pure signal.
+
+**GO**: **B > A** by a clear margin at equal budget (e.g. ρ +0.1), *or* B reaches A's ρ using ≤ 30%
+of the robot data. Zero-shot C ρ ≥ 0.4 is a bonus, not required.
+
+**NO-GO**: B ≈ A → ego pretraining buys nothing *at the head level*. A legitimate, valuable negative:
+drop the ego stage for the (frozen-feature) head and invest in in-domain data instead.
+
+> ⚠️ **Scope caveat**: this tests **head-level** transfer on a *frozen* backbone. A NO-GO here does
+> **not** kill the backbone-pretraining bet (the deferred VLM-fine-tuning phase) — keep the two
+> claims separate. Also watch **robot data volume**: the k-sweep needs enough LIBERO episodes to
+> subsample a real low-data curve (~429 clean segments today may be thin at high k — top up rollouts
+> via the dump hook if the curve is noisy).
 
 ---
 
