@@ -1,0 +1,35 @@
+# LOCKED baseline (2026-08) — value head on original egoverse + frozen GR00T N1.7.
+# Single venv (/opt/venv/egoverse): build_labels -> extract_features -> train/eval.
+# Reproduce:  bash bashscripts/pretrain_value_head/run.sh      (defaults = this config)
+#
+# Held-out result (test / 41 episodes, 400 segments):
+#   spearman_head  0.32     language_sensitivity  0.31   (clears M2 GO bar >= 0.3)
+#   train/val/test 0.81 / 0.41 / 0.32                     (large train gap: CE head overfits)
+
+data:
+  root: /mnt/workspace2/all_dataset/egoverse   # original egoverse (500 episodes)
+  episodes: 500
+  stride: 10                # sample every 10th frame within a segment
+  min_seg_frames: 5
+  arm: subgoal              # {subgoal | full}. subgoal now; full at team handover
+  neg: 1                    # wrong-sub-goal negatives per positive frame (used for the METRIC, not the loss)
+
+features:
+  model_path: /mnt/workspace/HUGGINGFACE_HOME/hub/Cosmos-Reason2-2B   # base pretrained VLM (no robot/LIBERO)
+  batch_size: 16
+  # all three poolings extracted; the head trains on `pool` below without re-extraction
+
+train:
+  pool: last_last           # {mean_last | last_last | mean_mid} — last_last (final token) wins decisively
+  n_bins: 10                # discrete cross-entropy over 10 bins (robometer); 1 = continuous huber
+  epochs: 150
+  lr: 1.0e-3                # frozen-feature MLP; robometer's 2e-5 is for full-VLM fine-tuning
+  segs_per_batch: 16
+  time_warp: false          # sequence-level anti-clock doesn't apply to a per-frame head
+  optimizer: adamw          # AdamW + weight_decay 0.01 + cosine LR + 10% warmup + grad-clip 1.0 (robometer)
+  loss_weights: {ce: 1.0, huber: 1.0, huber_neg: 0.0, rank: 0.5}
+                            # ce & huber are mutually exclusive (whichever the head emits);
+                            # huber_neg=0 (folding wrong-task negatives hurts at our ~49% fraction)
+
+# M2 GO (VALUE_HEAD_RESEARCH_PLAN.md): rho >= 0.7 AND > clock; language_sensitivity >= 0.3.
+# Status: language_sensitivity 0.31 PASSES; rho 0.32 is the frozen-feature ceiling (backbone FT is the lever).

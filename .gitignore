@@ -1,0 +1,44 @@
+__pycache__
+.vscode
+*.log
+*.idx
+*.npy
+*.txt
+!requirements/**
+!docs/*
+*.DS_Store
+*.out
+build
+docs/build
+dist
+logs/*
+outputs/*
+*.so
+.venv
+.docs-venv
+uv.lock
+rlinf/envs/maniskill/assets
+PKG-INFO
+*.egg-info/
+.claude/settings.json
+.idea
+MY_CLAUDE.md
+bashscripts/my_dockerfile
+.serena/
+z_tmp_md/
+# Collected rollout dumps (multi-GB .npz) — data, not source
+research/collected_rollouts/
+
+# --- Value-head: dataset & cached dataset (TEMPORARILY excluded — data, not source) ---
+# feature cache + decoded frames (~45 GB)
+vr_value_head/cache/
+vr_value_head/runs/
+# ego dataset sample bundle
+ego_dataset_example/
+# cached probe features / rendered videos / generated labels
+research/probes/features/
+research/probes/features_*/
+research/probes/segment_videos/
+research/probes/labels/
+# any cached feature/frame dumps
+*.npz
