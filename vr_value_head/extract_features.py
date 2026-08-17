@@ -26,11 +26,11 @@ MODEL_PATH = "/mnt/workspace/HUGGINGFACE_HOME/hub/Cosmos-Reason2-2B"
 HERE = Path(__file__).parent
 
 
-def build_model(device):
+def build_model(device, model_path=MODEL_PATH):
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
-    proc = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
+    proc = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
-        MODEL_PATH, dtype=torch.bfloat16).to(device).eval()
+        model_path, dtype=torch.bfloat16).to(device).eval()
     return proc, model
 
 
@@ -70,6 +70,9 @@ def encode(proc, model, images, prompts, device, mid_layer, padding_side):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cache", type=Path, default=HERE / "cache")
+    ap.add_argument("--model", default=MODEL_PATH,
+                    help="backbone to extract from; swap for the base-VLM ablation "
+                         "(Cosmos-Reason2-2B vs its base Qwen3-VL-2B-Instruct)")
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--mid-layer", type=int, default=-1)
     ap.add_argument("--device", default="cuda")
@@ -78,7 +81,8 @@ def main():
     pairs = pd.read_parquet(args.cache / "pairs.parquet")
     feat_dir = args.cache / "features"
     feat_dir.mkdir(parents=True, exist_ok=True)
-    proc, model = build_model(args.device)
+    print(f"backbone={Path(args.model).name}")
+    proc, model = build_model(args.device, args.model)
     padding_side = getattr(getattr(proc, "tokenizer", None), "padding_side", "right")
     print(f"padding_side={padding_side} | {len(pairs):,} pairs | "
           f"{pairs.episode_id.nunique()} episodes")

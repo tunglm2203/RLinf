@@ -323,6 +323,81 @@ and mean terminal progress on failures clearly below successes.
 
 ---
 
+## M8 — Value-head quality sweeps  *(1–2 weeks, head-mostly)*  ← raise the frozen ceiling before scaling anything
+
+Frozen features cap at **ρ≈0.30 in-domain** (M2); LoRA lifts ρ but **flattens language sensitivity 0.59→0.19** (M4 fine-tune). This milestone is the ordered set of levers to push quality, cheapest first. Cost tags: 🟢 head-only (reuse cache) · 🟡 re-extract (frozen) · 🔴 LoRA.
+
+- **Loss (🟢):** raise the `pairwise_rank` weight — it directly optimizes the Spearman/τ we report; sweep discrete bins 10→20→50 vs continuous huber.
+- **Representation (🟡):** **temporal context** — single-frame → short frame-stack / frame-diff (progress is inherently temporal; highest expected gain *without* unfreezing); pooling last-tok→mean/attention; last-layer→mid/multi-layer (`extract_features` already caches `mean_last`/`last_last`/`mean_mid`).
+- **Language grounding (🔴):** add a hard-negative *wrong-subgoal* contrastive term so LoRA **keeps** language sensitivity instead of destroying it (`neg_subgoal` rows already exist).
+
+**GO**: frozen-head ρ decisively past the 0.30 ceiling from representation changes, **and** a LoRA recipe that lifts ρ while holding language sensitivity ≥ its frozen value.
+
+---
+
+## M9 — Scaling law: does the ego benefit scale?  *(3–5 days, decisive)*  ← the millions-of-episodes question, answerable now
+
+The bet is that head-pretraining on *millions* of ego episodes helps downstream. From 500 episodes you can't confirm that — but you **can measure the slope**. Train on 50 / 100 / 200 / 500 episodes and plot ρ (and the ego→downstream transfer benefit) vs N, at **two capacities**:
+
+- **frozen head** — expected to saturate early (capacity-bound, not data-bound; consistent with the ρ≈0.30 ceiling).
+- **LoRA** — the regime where more data can keep paying off.
+
+**Read-out:** frozen flat + LoRA still rising at 500 ⇒ scaling helps *but only with trainable capacity* (green-light the large collection under LoRA/full-FT, not frozen head). Both flat ⇒ the ceiling is *label signal*, not data (fix targets first). The real millions-scale blockers are **not compute**: auto-labeling without sim predicates (ego has none), and the two-stage feature cache being a 500-episode convenience, not a streaming architecture (`finetune.py` already encodes on-the-fly).
+
+**GO**: a monotone, still-rising LoRA scaling curve — or a clear negative that redirects effort to labels.
+
+---
+
+## M10 — Base-VLM ablation: isolate the Cosmos recipe  *(3–5 days)*  ← what does NVIDIA's post-train buy for progress?
+
+Cosmos-Reason2-2B is post-trained on **`Qwen/Qwen3-VL-2B-Instruct`** (verified: identical arch — 28 layers, hidden 2048). Three stacked sources of progress knowledge — ① base VLM, ② NVIDIA Cosmos physical-reasoning post-train, ③ our ego head-pretrain — separate factorially. This isolates **②**: run the identical head + eval on features from the base vs Cosmos, everything else held fixed (the frozen two-stage design makes the backbone the **only** variable).
+
+**Do**: `extract_features.py --model Qwen3-VL-2B-Instruct --cache cache_qwenbase` (labels + 42G frames symlinked from the ego cache), train the same head with the same seed, compare the 7 metrics. Optional 3rd point: a *non-physical* same-size VLM to test "any VLM vs a physical-reasoning VLM."
+
+**GO**: a clear verdict — Cosmos > base on ρ/VOC ⇒ the physics post-train helps progress and stays under the ego head; Cosmos ≈ base ⇒ drop to the cheaper base. (NVIDIA's card benchmarks general/robotics reasoning, never progress — this is the missing measurement.)
+
+---
+
+## Data scale summary
+
+| milestone | data needed | have today |
+|---|---|---|
+| M0 | 6 clips (pipeline smoke test) | ✅ sample bundle |
+| M1 | 50–200 clips | ❌ need release |
+| M2 | ≥ 1k clips (~5k segments) | ❌ need release |
+| M3 | + robot data (OXE subset / LIBERO demos) | ⚠️ LIBERO demos yes |
+| M4 | ≥ 1k self-generated rollouts, ≥30% failures | ✅ generatable now |
+| M6 | RL compute | ✅ 2×5090 |
+
+**Two things you can start today without more corpus data:** M0 (instrumentation) and M4's rollout
+collection (self-generated failure data from the existing SFT checkpoint). Both are on the critical
+path and neither is blocked.
+
+---
+
+## Suggested ordering (parallelism)
+
+```
+week 1-2   M0 instrumentation            ║ start M4 rollout collection (background, free)
+week 2-3   M1 linear probe               ║ (rollouts accumulating)
+week 3-5   M2 value head v1              ║
+week 5-6   M3 transfer  ← key decision   ║
+week 6-8   M4 failure calibration
+─────────  current focus  ─────────
+now        M8 quality sweeps  ║  M9 scaling curve  ║  M10 base-VLM ablation
+later      M5 offline readiness → M6 RL integration → M7 scale-out  (deprioritized)
+```
+
+Track B (backbone pretraining) runs independently on cluster resources and is swapped in at M7.
+
+---
+
+## Deprioritized — RL integration track (not current focus)
+
+M5–M7 below are the downstream RL milestones, parked while the focus is value-head quality, scaling, and the base-VLM ablation (M8–M10). Content unchanged from the original plan.
+
+---
+
 ## M5 — Offline RL-readiness check  *(3–5 days)*  ← cheap insurance before burning GPU
 
 Before wiring any RL. On held-out rollouts, compute the shaped reward `r_t = Δ progress` and check:
@@ -383,35 +458,3 @@ very consistency assumption that makes postfix Φ safe.
 4. Swap in the pretrained Qwen3.5-VL-0.8B backbone (track B) and re-run M2/M5/M6 as regression tests.
 
 ---
-
-## Data scale summary
-
-| milestone | data needed | have today |
-|---|---|---|
-| M0 | 6 clips (pipeline smoke test) | ✅ sample bundle |
-| M1 | 50–200 clips | ❌ need release |
-| M2 | ≥ 1k clips (~5k segments) | ❌ need release |
-| M3 | + robot data (OXE subset / LIBERO demos) | ⚠️ LIBERO demos yes |
-| M4 | ≥ 1k self-generated rollouts, ≥30% failures | ✅ generatable now |
-| M6 | RL compute | ✅ 2×5090 |
-
-**Two things you can start today without more corpus data:** M0 (instrumentation) and M4's rollout
-collection (self-generated failure data from the existing SFT checkpoint). Both are on the critical
-path and neither is blocked.
-
----
-
-## Suggested ordering (parallelism)
-
-```
-week 1-2   M0 instrumentation            ║ start M4 rollout collection (background, free)
-week 2-3   M1 linear probe               ║ (rollouts accumulating)
-week 3-5   M2 value head v1              ║
-week 5-6   M3 transfer  ← key decision   ║
-week 6-8   M4 failure calibration
-week 8-9   M5 offline readiness check
-week 9-11  M6 RL integration, task 0
-then       M7 scale-out + backbone swap
-```
-
-Track B (backbone pretraining) runs independently on cluster resources and is swapped in at M7.
