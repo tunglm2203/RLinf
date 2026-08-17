@@ -1,14 +1,19 @@
 """Held-out metrics — reuses probes/metrics.py and adds the head-specific tests.
 
-The absolute ρ is not the bar; BEATING THE CLOCK is. Every number is reported against a
-baseline:
+The absolute ρ is not the bar; BEATING THE CLOCK is. Reported against baselines:
   clock          per-frame elapsed index within its segment (the thing vision must beat)
   language_gap   ρ(correct sub-goal) − pred-on-wrong (matched-frame language sensitivity)
   time_warp      ρ under non-uniform temporal resampling (a clock collapses here by design)
+
+Also reports the robometer / GVL progress metrics (same definitions as robometer):
+  pearson_voc    Value-Order Correlation — per-segment Pearson(pred, target)
+  kendall_tau_a  per-segment Kendall τ-a, TIE-IGNORING (robometer's hand-rolled variant)
+  succ_fail_diff mean terminal predicted progress on SUCCESS − on FAILURE (needs failure data)
 """
 
 from __future__ import annotations
 
+import itertools
 import sys
 from pathlib import Path
 
@@ -18,6 +23,45 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "research" / "probes"))
 from metrics import evaluate as probe_eval  # noqa: E402  (spearman, rank acc, monotonicity)
+
+
+def kendall_tau_a(x, y) -> float:
+    """Kendall τ-a, tie-ignoring — robometer's exact impl (eval_metrics_utils.py). NOT scipy's
+    τ-b: concordant−discordant over n(n−1)/2, pairs with a tie on either side skipped."""
+    x, y = np.asarray(x), np.asarray(y)
+    n = len(x)
+    if n < 2:
+        return float("nan")
+    C = D = 0
+    for i, j in itertools.combinations(range(n), 2):
+        dx, dy = np.sign(x[i] - x[j]), np.sign(y[i] - y[j])
+        if dx == 0 or dy == 0:
+            continue
+        C += (dx == dy); D += (dx != dy)
+    return (C - D) / (n * (n - 1) / 2)
+
+
+def _per_seg(df, pcol, tcol, fn) -> float:
+    """Apply correlation `fn(pred, target)` per (episode, segment) and average."""
+    rs = [fn(g[pcol].to_numpy(), g[tcol].to_numpy())
+          for _, g in df.groupby(["episode_id", "seg_idx"])
+          if g[pcol].nunique() > 2 and g[tcol].nunique() > 1]
+    return float(np.nanmean(rs)) if rs else float("nan")
+
+
+def success_failure_diff(rows: pd.DataFrame) -> dict:
+    """robometer `succ_fail_diff`: mean TERMINAL predicted progress on success episodes minus on
+    failures. Needs a `success` column (failure-inclusive dataset); returns {} if absent, NaN if
+    only one class present. Terminal = the last frame of each episode."""
+    if "success" not in rows.columns:
+        return {}
+    pos = rows[rows.role == "pos"]
+    term = pos.loc[pos.groupby("episode_id").frame.idxmax()]      # last frame per episode
+    s, f = term[term.success.astype(bool)], term[~term.success.astype(bool)]
+    if len(s) == 0 or len(f) == 0:
+        return {"succ_fail_diff": float("nan")}
+    return {"succ_fail_diff": float(s.pred.mean() - f.pred.mean()),
+            "term_pred_success": float(s.pred.mean()), "term_pred_failure": float(f.pred.mean())}
 
 
 @torch.no_grad()
@@ -41,39 +85,59 @@ def clock_baseline(rows: pd.DataFrame) -> float:
     return float(np.nanmean(rs)) if rs else float("nan")
 
 
-def report(head, view, device="cpu") -> dict:
+# --- canonical 7 metrics, applicability, and the experiment signature ----------------------------
+METRIC7 = [("spearman_head", "ρ"), ("pearson_voc", "VOC"), ("kendall_tau_a", "τa"),
+           ("language_sensitivity", "lang"), ("succ_fail_diff", "SFΔ"),
+           ("term_pred_success", "P_succ"), ("term_pred_failure", "P_fail")]
+
+
+def make_signature(pretrain="none", downstream="none", eval_ds="?", cond="?", target="?",
+                   vlm_pre=None, vlm_ft=None) -> str:
+    """Canonical experiment signature: P:… → D:… → E:…[cond,target]. vlm_* ∈ {frozen, LoRA}."""
+    def stage(data, vlm):
+        return "none" if (not data or data == "none") else (f"{data}(VLM={vlm})" if vlm else data)
+    return (f"P:{stage(pretrain, vlm_pre)} → D:{stage(downstream, vlm_ft)} "
+            f"→ E:{eval_ds}[cond={cond},target={target}]")
+
+
+def fmt7(m: dict, signature: str = None) -> str:
+    """One-line canonical result: signature + the 7 metrics, with N/A where inapplicable."""
+    def v(x): return "  N/A " if (x is None or (isinstance(x, float) and x != x)) else f"{x:+.3f}"
+    sig = signature or m.get("signature") or ""
+    body = "  ".join(f"{lab}={v(m.get(k))}" for k, lab in METRIC7)
+    return f"{sig}\n  {body}   (clock={v(m.get('clock'))})"
+
+
+def report(head, view, device="cpu", signature=None) -> dict:
+    """The 7 canonical metrics. ROBOMETER convention: progress correlations (ρ/VOC/τa) and language
+    sensitivity are computed on SUCCESS trajectories only when the eval set carries a `success`
+    label; the quality-separation metrics (SFΔ/P_succ/P_fail) use ALL tiers and become N/A (absent)
+    when there are no failure labels."""
+    from scipy.stats import pearsonr, spearmanr
     rows = predict(head, view, device)
     pos = rows[rows.role == "pos"].rename(columns={"local_progress": "target"})
-    # per-trajectory (per-segment) Spearman of prediction vs proxy target
-    m = probe_eval(pos.assign(episode_id=pos.episode_id + "#" + pos.seg_idx.astype(str)),
-                   pred_col="pred", target_col="target")
-    out = {"spearman_head": m.get("spearman"), "rank_acc": m.get("pairwise_rank_acc"),
-           "monotonicity": m.get("monotonicity"), "clock": clock_baseline(rows)}
+    # success-only subset for correlations + language (robometer's rule); all-pos if unlabeled
+    corr = pos[pos.success.astype(bool)] if "success" in pos.columns else pos
+
+    out = {"clock": clock_baseline(rows), "signature": signature}
+    out["spearman_head"] = _per_seg(corr, "pred", "target", lambda a, b: spearmanr(a, b).correlation)
+    out["pearson_voc"] = _per_seg(corr, "pred", "target",
+                                  lambda a, b: pearsonr(a, b)[0] if np.std(a) and np.std(b) else np.nan)
+    out["kendall_tau_a"] = _per_seg(corr, "pred", "target", kendall_tau_a)
     out["beats_clock"] = (out["spearman_head"] or 0) - (out["clock"] or 0)
 
-    # Language sensitivity = rho(pred | correct sub-goal) - rho(pred | WRONG sub-goal), both
-    # per-segment Spearman against the SAME true local progress (from the matched positive).
-    # This is the plan's definition and is RANK-based, so it is immune to the abstain-to-0.5
-    # offset that made a raw mean(correct-wrong) gap ~0 by construction. If the head ignores
-    # language, pred is identical under either sub-goal -> rho_wrong == rho_correct -> sens ~ 0.
-    # If it uses language, the wrong sub-goal should break progress tracking -> rho_wrong lower.
-    from scipy.stats import spearmanr
-
-    def per_seg_rho(df, pcol, tcol):
-        rs = [spearmanr(g[pcol], g[tcol]).correlation
-              for _, g in df.groupby(["episode_id", "seg_idx"])
-              if g[pcol].nunique() > 2 and g[tcol].nunique() > 2]
-        return float(np.nanmean(rs)) if rs else float("nan")
-
-    neg = rows[rows.role == "neg_subgoal"].copy()
+    # language sensitivity = rho(correct sub-goal) - rho(wrong sub-goal), on the SAME success subset
+    neg = rows[rows.role == "neg_subgoal"]
     if len(neg):
-        truth = pos[["episode_id", "frame", "seg_idx", "target"]]     # true progress per frame
+        truth = corr[["episode_id", "frame", "seg_idx", "target"]]
         negm = neg.merge(truth, on=["episode_id", "frame", "seg_idx"], how="inner")
-        rho_correct = per_seg_rho(pos, "pred", "target")
-        rho_wrong = per_seg_rho(negm, "pred", "target")
-        out["rho_correct_subgoal"] = rho_correct
-        out["rho_wrong_subgoal"] = rho_wrong
-        out["language_sensitivity"] = (rho_correct or 0.0) - (rho_wrong or 0.0)
+        rc = _per_seg(corr, "pred", "target", lambda a, b: spearmanr(a, b).correlation)
+        rw = _per_seg(negm, "pred", "target", lambda a, b: spearmanr(a, b).correlation)
+        out["rho_correct_subgoal"], out["rho_wrong_subgoal"] = rc, rw
+        out["language_sensitivity"] = (rc or 0.0) - (rw or 0.0)
+
+    # quality-separation (ALL tiers). success_failure_diff returns {} when no `success` col -> N/A
+    out.update(success_failure_diff(rows))
     return out
 
 
