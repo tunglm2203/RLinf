@@ -32,11 +32,11 @@ MODEL_PATH = "/mnt/workspace/HUGGINGFACE_HOME/hub/Cosmos-Reason2-2B"
 TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 
-def build(lora_r, lora_alpha, dropout, n_bins, device):
+def build(lora_r, lora_alpha, dropout, n_bins, device, model_path=MODEL_PATH):
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
     from peft import LoraConfig, get_peft_model
-    proc = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
-    model = Qwen3VLForConditionalGeneration.from_pretrained(MODEL_PATH, dtype=torch.bfloat16)
+    proc = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    model = Qwen3VLForConditionalGeneration.from_pretrained(model_path, dtype=torch.bfloat16)
     model.config.use_cache = False
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()                       # required: grad-ckpt through frozen base
@@ -106,6 +106,8 @@ def run_eval(proc, model, head, frames, rows, device, pad_side, bs=16):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cache", type=Path, default=HERE / "cache_libero_quality")
+    ap.add_argument("--model", default=MODEL_PATH,
+                    help="backbone to LoRA-adapt; base Qwen3-VL-2B-Instruct for configs 2, Cosmos for 4")
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--lora-r", type=int, default=16)
@@ -121,7 +123,8 @@ def main():
     tr = pairs[(pairs.split == "train") & (pairs.role == "pos")].reset_index(drop=True)  # neg masked in CE
     te = pairs[pairs.split == "test"].reset_index(drop=True)
     frames = Frames(args.cache)
-    proc, model, head = build(args.lora_r, args.lora_alpha, 0.05, args.n_bins, args.device)
+    proc, model, head = build(args.lora_r, args.lora_alpha, 0.05, args.n_bins, args.device, args.model)
+    print(f"backbone={Path(args.model).name}")
     pad_side = getattr(getattr(proc, "tokenizer", None), "padding_side", "right")
     print(f"cache={args.cache.name} | train pairs={len(tr)} | test pairs={len(te)} | pad={pad_side}")
 

@@ -109,12 +109,16 @@ def fmt7(m: dict, signature: str = None) -> str:
 
 
 def report(head, view, device="cpu", signature=None) -> dict:
-    """The 7 canonical metrics. ROBOMETER convention: progress correlations (ρ/VOC/τa) and language
-    sensitivity are computed on SUCCESS trajectories only when the eval set carries a `success`
-    label; the quality-separation metrics (SFΔ/P_succ/P_fail) use ALL tiers and become N/A (absent)
-    when there are no failure labels."""
+    """The 7 canonical metrics from the frozen two-stage path (pooled features in `view`)."""
+    return report_metrics(predict(head, view, device), signature)
+
+
+def report_metrics(rows: pd.DataFrame, signature=None) -> dict:
+    """The 7 canonical metrics from a rows frame carrying a `pred` column — works for BOTH the frozen
+    two-stage path and on-the-fly LoRA encoding, so the two report identically. ROBOMETER convention:
+    progress correlations (ρ/VOC/τa) and language sensitivity on SUCCESS trajectories only when the
+    eval set carries a `success` label; SFΔ/P_succ/P_fail over ALL tiers, auto-N/A without failures."""
     from scipy.stats import pearsonr, spearmanr
-    rows = predict(head, view, device)
     pos = rows[rows.role == "pos"].rename(columns={"local_progress": "target"})
     # success-only subset for correlations + language (robometer's rule); all-pos if unlabeled
     corr = pos[pos.success.astype(bool)] if "success" in pos.columns else pos
