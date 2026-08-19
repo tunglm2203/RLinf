@@ -348,13 +348,33 @@ The bet is that head-pretraining on *millions* of ego episodes helps downstream.
 
 ---
 
-## M10 — Base-VLM ablation: isolate the Cosmos recipe  *(3–5 days)*  ← what does NVIDIA's post-train buy for progress?
+## M10 — Base-VLM ablation: isolate the Cosmos recipe  *(3–5 days)*  ✅ DONE — recipe is latent (neutral frozen, clearly helps under LoRA; Cosmos+LoRA dominant across the trio)
 
 Cosmos-Reason2-2B is post-trained on **`Qwen/Qwen3-VL-2B-Instruct`** (verified: identical arch — 28 layers, hidden 2048). Three stacked sources of progress knowledge — ① base VLM, ② NVIDIA Cosmos physical-reasoning post-train, ③ our ego head-pretrain — separate factorially. This isolates **②**: run the identical head + eval on features from the base vs Cosmos, everything else held fixed (the frozen two-stage design makes the backbone the **only** variable).
 
 **Do**: `extract_features.py --model Qwen3-VL-2B-Instruct --cache cache_qwenbase` (labels + 42G frames symlinked from the ego cache), train the same head with the same seed, compare the 7 metrics. Optional 3rd point: a *non-physical* same-size VLM to test "any VLM vs a physical-reasoning VLM."
 
 **GO**: a clear verdict — Cosmos > base on ρ/VOC ⇒ the physics post-train helps progress and stays under the ego head; Cosmos ≈ base ⇒ drop to the cheaper base. (NVIDIA's card benchmarks general/robotics reasoning, never progress — this is the missing measurement.)
+
+---
+
+## M11 — Global progress: learn it together with local  *(1 week)*  ← the derived-global head, finally trained
+
+Today only the **local** head is trained; global is an inert formula — `global = (k+local)/(k+remaining)` — whose `remaining` term has no target (`predict_remaining` is off, so `remaining_head` isn't even built). This milestone trains global the **design-consistent way: predict `remaining`, derive global** — never regress global directly (it's non-monotone under replanning and K isn't a model input).
+
+**Do**: flip `predict_remaining=True`; add a `remaining` target (`n_segs − seg_idx`, normalized) in build_labels; add a `remaining` loss (Huber, or a small CE) to `total_loss`, trained **jointly** with the local CE. `k` is grounded from `seg_idx` at compose time; `k + remaining = K` (total sub-goals, not frames).
+
+**GO**: derived global tracks true global progress (per-episode ρ) on held-out data **without hurting local ρ** — the joint objective is a free add, not a trade-off. (Why `remaining` not `K`: k is certain and only `remaining` is uncertain; Softplus keeps `K ≥ k`; `remaining` is per-frame-varying and boundary-anchored → 0 — full rationale in the global-progress design note.)
+
+---
+
+## M12 — Few-shot ego-init curve  *(3–5 days, CPU-cheap)*  ← the core bet, and the gate
+
+The make-or-break for the whole ego premise. Ego-pretrain loses at both extremes — zero-shot (k=0) it's weak/negative; full-data scratch hits ρ≈0.95 (the M10 control). Its value, if any, is the **data-efficient middle**: does an ego-pretrained head fine-tuned on *k* target episodes beat a scratch head on the same *k*?
+
+**Do**: k-sweep k ∈ {1, 2, 5, 10} target episodes; per k compare **ego-init → finetune** vs **scratch-from-random**, both backbones, frozen (cheap) then LoRA, on the transfer sets. Run first with the *current* head (baseline), then re-run after M8/M11 improvements.
+
+**GO**: the ego curve sits **above** scratch at small k (a real data-efficiency win). If it doesn't, the ego bet is in question — so run this **early**, as a gate on further ego investment.
 
 ---
 
@@ -384,17 +404,19 @@ week 3-5   M2 value head v1              ║
 week 5-6   M3 transfer  ← key decision   ║
 week 6-8   M4 failure calibration
 ─────────  current focus  ─────────
-now        M8 quality sweeps  ║  M9 scaling curve  ║  M10 base-VLM ablation
-later      M5 offline readiness → M6 RL integration → M7 scale-out  (deprioritized)
+done       M10 base-VLM ablation  ✅
+now        M12 few-shot ego-init (the GATE)  ║  M8 local quality  ║  M11 global progress
+next       M4 failure calibration (RL-safety prerequisite)  ║  M9 scaling curve
+eval       Downstream policy performance (M5 → M6 → M7) — the terminal validation of the bet
 ```
 
-Track B (backbone pretraining) runs independently on cluster resources and is swapped in at M7.
+Track B (backbone pretraining) runs independently on cluster resources and is swapped in at scale-out.
 
 ---
 
-## Deprioritized — RL integration track (not current focus)
+## Evaluation protocol — Downstream policy performance  *(the terminal validation of the value head)*
 
-M5–M7 below are the downstream RL milestones, parked while the focus is value-head quality, scaling, and the base-VLM ablation (M8–M10). Content unchanged from the original plan.
+The ultimate test of the value head is **not any offline metric** but whether it **improves downstream RL policy performance** — treat it as an *evaluation axis*, not parked build work. The head is "good" iff a policy post-trained with it (reward-shaping and/or critic-init) beats the same policy without it (success-rate delta on the target task). M5–M7 below are the machinery for that end-to-end evaluation: offline RL-readiness → single-task RL → scale-out. **Prerequisite: M4** — a head that can't separate success from failure will mis-shape exactly where the policy explores.
 
 ---
 

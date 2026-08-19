@@ -46,19 +46,12 @@ Full baseline details, findings, and gotchas are in **`vr_value_head/README.md`*
 
 ## TODO
 
-**Improve the baseline (cheap, stage-2 only, reuse the cache):**
-- [ ] Regularization sweep (dropout 0.1→0.3, weight-decay↑) to close the train→test overfit gap (0.81 vs 0.32).
-- [ ] Fix the `remaining` head: it has no training target yet, so derived global progress `(k+local)/(k+remaining)` is unusable.
-
-**Bigger levers (need a re-extract or backbone training):**
-- [ ] `ARM=full` — the faithful hierarchical span (global + grounded history + sub-goal); the intended handover config. Needs a re-extract.
-- [ ] Denser frames (`STRIDE=5`) and/or more ego sources — more within-segment signal. Needs a re-extract.
-- [ ] **VLM fine-tuning** — unfreeze the backbone; the main lever to break the frozen-feature ceiling (~0.32) and enable robometer's `<|prog_token|>` + reverse/rewind augmentations.
-- [ ] Paraphrase-consistency loss — robustness to wording; turns on with the corpus release (egoverse has no rephrasings).
-
-**Research milestones (`research/VALUE_HEAD_RESEARCH_PLAN.md`):**
-- [ ] M3 — cross-domain transfer: does ego pretraining beat from-scratch on a robot/LIBERO progress head? (the core research bet)
-- [ ] M6 — wire the head into RL: reward shaping / critic init in RLinf.
+Near-term plan (details in `research/VALUE_HEAD_RESEARCH_PLAN.md`):
+- [ ] **M12 — Few-shot ego-init curve (the gate):** test whether an ego-pretrained head fine-tuned on k target episodes beats a scratch head at the same k — the make-or-break for the ego bet.
+- [ ] **M11 — Global progress:** train the `remaining` head so global `(k+local)/(k+remaining)` becomes derived and functional, jointly with local (predict `remaining`, never regress global directly).
+- [ ] **M8 — Improve local progress:** raise local quality via the loss (rank/bins), language-preserving LoRA, and temporal context (single-frame → frame-stack).
+- [ ] **M4 — Failure calibration:** train on failure-inclusive data so terminal progress separates success from failure — the prerequisite for safe RL use.
+- [ ] **Downstream policy performance (terminal eval):** validate the head end-to-end by whether a policy post-trained with it (reward-shaping / critic-init) beats the same policy without it.
 
 ## Layout
 
