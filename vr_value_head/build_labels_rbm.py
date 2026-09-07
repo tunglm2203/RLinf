@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 
 HERE = Path(__file__).parent
-_EMB = re.compile(r"trajectory_(\d+)_([0-9a-f-]+)_embeddings\.pt$")
+_EMB = re.compile(r"trajectory_(\d+)_(.+)_embeddings\.pt$")   # id may be a hex uuid OR a descriptive name
 
 
 def ensure_extracted(root: Path, name: str) -> Path:
@@ -43,7 +43,8 @@ def ensure_extracted(root: Path, name: str) -> Path:
 
 
 def load_dataset(dpath: Path):
-    """Yield (uuid, task_str, quality, frames) per trajectory."""
+    """Yield (uuid, task_str, quality, frames_npz_path) per trajectory — LAZY (no frame load here,
+    so the caller can cap/subsample before paying to decompress frames)."""
     mp = json.loads((dpath / "index_mappings.json").read_text())
     idx_task = {i: t for t, idxs in mp.get("task_indices", {}).items() for i in idxs}
     idx_qual = {i: q for q, idxs in mp.get("quality_indices", {}).items() for i in idxs}
@@ -56,24 +57,41 @@ def load_dataset(dpath: Path):
         fnpz = dpath / "frames" / f"trajectory_{uuid}.npz"
         if not fnpz.exists() or i not in idx_task:
             continue
-        yield uuid, idx_task[i], idx_qual.get(i, "successful"), np.load(fnpz)["frames"]
+        yield uuid, idx_task[i], idx_qual.get(i, "successful"), fnpz
 
 
-def build(root: Path, includes, out_dir: Path, stride: int, n_neg: int, max_frames: int, seed: int):
+def build(root: Path, includes, out_dir: Path, stride: int, n_neg: int, max_frames: int, seed: int,
+          names=None, cap: int = 0, linspace: bool = False):
     rng = np.random.default_rng(seed)
-    names = sorted({t.stem for t in root.glob("*.tar")
-                    if any(inc in t.stem for inc in includes)})
+    # datasets are available either as <name>.tar OR as a pre-extracted <name>/ dir (processed_datasets)
+    avail = {t.stem for t in root.glob("*.tar")}
+    avail |= {d.name for d in root.iterdir() if d.is_dir() and (d / "index_mappings.json").exists()}
+    if names:                                             # exact-name selection (e.g. the eval groups)
+        chosen = [n for n in names if n in avail]
+        missing = [n for n in names if n not in avail]
+        if missing:
+            print(f"WARNING: {len(missing)} requested dataset(s) not found under {root}:")
+            for m in missing:
+                print(f"  - {m}")
+    else:                                                 # legacy substring selection
+        chosen = sorted(n for n in avail if any(inc in n for inc in includes))
     frames_out = out_dir / "frames"
     frames_out.mkdir(parents=True, exist_ok=True)
 
     rows, pair_id = [], 0
-    for name in names:
+    for name in chosen:
         d = ensure_extracted(root, name)
         trajs = list(load_dataset(d))
+        if cap and len(trajs) > cap:                      # per-dataset episode cap (random subsample)
+            trajs = [trajs[i] for i in sorted(rng.choice(len(trajs), size=cap, replace=False))]
         tasks_here = sorted({t for _, t, _, _ in trajs})
-        for uuid, task, quality, frames in trajs:
+        for uuid, task, quality, fnpz in trajs:
+            frames = np.load(fnpz)["frames"]
             N = frames.shape[0]
-            idx = list(range(0, N, stride))[:max_frames]
+            if linspace and N > max_frames:                  # robometer's eval subsampling (max_frames=8)
+                idx = sorted({int(i) for i in np.linspace(0, N - 1, max_frames).round().astype(int)})
+            else:
+                idx = list(range(0, N, stride))[:max_frames]
             if len(idx) < 2:
                 continue
             eid = f"{name}__{uuid}"
@@ -105,14 +123,24 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=Path, default=Path("/mnt/workspace2/all_dataset/robometer_dataset"))
     ap.add_argument("--include", nargs="+", default=["metaworld", "usc_", "mit_franka", "so101", "libero256"])
+    ap.add_argument("--groups", action="store_true",
+                    help="select the 18 datasets of the 3 standard eval groups (rbm_eval_groups.ALL_DATASETS)")
     ap.add_argument("--out", type=Path, default=HERE / "cache_rbm")
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--neg", type=int, default=1)
     ap.add_argument("--max-frames", type=int, default=32)
+    ap.add_argument("--linspace", action="store_true",
+                    help="evenly subsample each trajectory to --max-frames (robometer eval uses linspace to 8)")
+    ap.add_argument("--cap", type=int, default=0, help="max episodes per dataset (0 = no cap)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
-    pairs = build(args.root, args.include, args.out, args.stride, args.neg, args.max_frames, args.seed)
+    names = None
+    if args.groups:
+        from rbm_eval_groups import ALL_DATASETS
+        names = ALL_DATASETS
+    pairs = build(args.root, args.include, args.out, args.stride, args.neg, args.max_frames, args.seed,
+                  names=names, cap=args.cap, linspace=args.linspace)
     if pairs.empty:
         raise SystemExit("no pairs produced (check --root / --include patterns)")
     ep = pairs.drop_duplicates("episode_id")

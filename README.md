@@ -124,3 +124,45 @@ test  spearman_head 0.32   language_sensitivity 0.31   (clears M2 GO bar >= 0.3)
 
 Common env overrides (all have baseline defaults): `EPISODES POOL N_BINS EPOCHS LR STRIDE ARM
 TIME_WARP SEGS_PER_BATCH BATCH_SIZE DEVICE CACHE RUN_NAME STAGE`.
+
+## Evaluation (robometer-aligned)
+
+The head is scored on **3 standard robometer eval groups**, defined in `vr_value_head/rbm_eval_groups.py`
+(sourced live from robometer's `data/dataset_category.py`, so they stay in sync):
+
+| group | datasets | robometer split |
+|---|---|---|
+| **RBM-EVAL-ID** | 9 — OXE evals, RACER-val, MetaWorld-eval, LIBERO-90 | `rbm-1m-id` eval |
+| **RBM-EVAL-OOD** | 6 — real-robot: trossen, mit_franka, so101, koch, xarm | `rbm-1m-ood` eval |
+| **LIBERO-mixed** | 4 — LIBERO-90/10 **success + failure** combined | `libero_pi0` eval |
+
+**Metrics — identical computation to robometer:**
+- *reward_alignment*: **ρ / VOC / τ-a** — per-trajectory Spearman / Pearson / tie-ignoring Kendall, on
+  **success trajectories only**.
+- *Suc-Fail*: **pairwise preference accuracy** — sample (success, failure) pairs of the same task, correct
+  iff **terminal** predicted progress ranks the success above the failure (robometer Table-III;
+  `num_examples_per_quality_pr=1000`). Range [0,1], chance 0.5.
+- Frames: **linspace-subsample to 8** per trajectory; **all episodes** (no cap).
+
+**One intentional difference:** our head is **single-frame** (one frame → progress); robometer's is an
+**8-frame video** model. The metric *computation* is identical; the *prediction* is not (temporal context
+is deferred — see the M8 to-do). So the numbers are a valid eval of *our* head but are **not directly
+comparable** to robometer's published values (same protocol, simpler model).
+
+**Backbone rule:** the extraction backbone MUST match the head being scored (Cosmos head → Cosmos features;
+base head → base features). Each backbone needs its own feature cache — you cannot cross-feed (same 2048-d
+shape, different values → silent garbage).
+
+```bash
+# 1. download the 18 eval datasets (selective mirror of robometer's HF dataset repo)
+ROBOMETER_PROCESSED_DATASETS_PATH=/mnt/.../processed_datasets \
+  bash bashscripts/pretrain_value_head/download_rbm_eval_data.sh
+
+# 2. build labels (linspace-8, all eps) -> extract on GPU 1 -> eval; Cosmos frozen-ego head by default
+bash bashscripts/pretrain_value_head/eval_rbm.sh                       # STAGE=all
+
+# re-eval a different head off the same feature cache (seconds, no GPU):
+STAGE=eval HEAD=vr_value_head/runs/<other>/head.pt bash bashscripts/pretrain_value_head/eval_rbm.sh
+```
+Output → `logs/eval_rbm/<LABEL>/{1_build,2_extract,3_eval}.log`. Knobs: `MODEL HEAD CACHE LABEL MAX_FRAMES
+NEG CAP GPU STAGE` (`NEG=1` also computes our bonus `lang`; `MODEL` must match `HEAD`).

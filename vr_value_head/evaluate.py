@@ -64,6 +64,36 @@ def success_failure_diff(rows: pd.DataFrame) -> dict:
             "term_pred_success": float(s.pred.mean()), "term_pred_failure": float(f.pred.mean())}
 
 
+def suc_fail_pref_acc(rows: pd.DataFrame, n_pairs: int = 1000, seed: int = 0,
+                      task_col: str = "global_task") -> dict:
+    """robometer 'Suc-Fail' (Table III) = pairwise PREFERENCE ACCURACY, not a mean gap. Sample
+    (success, failure) trajectory pairs OF THE SAME TASK; correct iff the model ranks the success
+    above the failure by TERMINAL predicted progress (progress_chosen[-1] > progress_rejected[-1],
+    per robometer's compute_preference_accuracy_from_progress). n_pairs = num_examples_per_quality_pr
+    (robometer default 1000). Range [0,1], chance 0.5. N/A (absent) without both classes."""
+    if "success" not in rows.columns or task_col not in rows.columns:
+        return {}
+    pos = rows[rows.role == "pos"]
+    term = pos.loc[pos.groupby("episode_id").frame.idxmax()]          # terminal frame per episode
+    per_task = []                                                     # (success_terminals, failure_terminals)
+    for _, g in term.groupby(task_col):
+        s = g[g.success.astype(bool)].pred.to_numpy()
+        f = g[~g.success.astype(bool)].pred.to_numpy()
+        if len(s) and len(f):
+            per_task.append((s, f))
+    if not per_task:
+        return {"suc_fail_acc": float("nan"), "suc_fail_n": 0}
+    rng = np.random.default_rng(seed)
+    w = np.array([len(s) * len(f) for s, f in per_task], dtype=float)  # sample tasks ∝ #possible pairs
+    n = int(min(n_pairs, w.sum()))
+    picks = rng.choice(len(per_task), size=n, p=w / w.sum())
+    correct = 0
+    for ti in picks:
+        s, f = per_task[ti]
+        correct += int(s[rng.integers(len(s))] > f[rng.integers(len(f))])
+    return {"suc_fail_acc": correct / n, "suc_fail_n": n}
+
+
 @torch.no_grad()
 def predict(head, view, device="cpu") -> pd.DataFrame:
     b = view.full()
@@ -87,7 +117,7 @@ def clock_baseline(rows: pd.DataFrame) -> float:
 
 # --- canonical 7 metrics, applicability, and the experiment signature ----------------------------
 METRIC7 = [("spearman_head", "ρ"), ("pearson_voc", "VOC"), ("kendall_tau_a", "τa"),
-           ("language_sensitivity", "lang"), ("succ_fail_diff", "SFΔ"),
+           ("suc_fail_acc", "SucFail"), ("language_sensitivity", "lang"), ("succ_fail_diff", "SFΔ"),
            ("term_pred_success", "P_succ"), ("term_pred_failure", "P_fail")]
 
 
@@ -142,6 +172,7 @@ def report_metrics(rows: pd.DataFrame, signature=None) -> dict:
 
     # quality-separation (ALL tiers). success_failure_diff returns {} when no `success` col -> N/A
     out.update(success_failure_diff(rows))
+    out.update(suc_fail_pref_acc(rows))          # robometer Table-III Suc-Fail (pairwise pref accuracy)
     return out
 
 
